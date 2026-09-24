@@ -25,13 +25,6 @@ class AffairStatus(str, Enum):
     rejected = "已退回"
 
 
-class AnnouncementCategory(str, Enum):
-    notice = "通知"
-    announcement = "公告"
-    policy = "政策"
-    publicity = "公示"
-
-
 class ResidentCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
     id_card: str = Field(..., min_length=18, max_length=18)
@@ -62,14 +55,6 @@ class AffairProcess(BaseModel):
     department_id: Optional[int] = None
     handler: str
     result: Optional[str] = None
-
-
-class AnnouncementCreate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200)
-    content: str
-    category: AnnouncementCategory
-    publisher: str
-    is_pinned: bool = False
 
 
 class PetitionType(str, Enum):

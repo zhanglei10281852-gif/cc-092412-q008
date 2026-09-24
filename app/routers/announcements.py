@@ -1,76 +1,129 @@
-from fastapi import APIRouter, HTTPException, Query
-from typing import Optional
-from app.database import get_connection
-from app.models import AnnouncementCreate
+from __future__ import annotations
 
-router = APIRouter(prefix="/announcements", tags=["公告管理"])
+from fastapi import APIRouter, Depends, Query
+
+from app.api.dependencies import current_principal
+from app.core.security import Principal
+from app.database import get_connection, transaction
+from app.schemas.announcement import (
+    AnnouncementDraftRequest,
+    AnnouncementReviewRequest,
+    AnnouncementReviseRequest,
+    AnnouncementSubmitRequest,
+    AnnouncementWithdrawRequest,
+)
+from app.services.announcements import AnnouncementService
+
+# 公众阅读接口：只暴露已发布公告的生效版本与历史版本
+public_router = APIRouter(prefix="/announcements", tags=["公告公开"])
+
+# 管理接口：草稿、送审、审阅、更正、撤回、归档全流程
+admin_router = APIRouter(prefix="/api/announcements", tags=["公告管理"])
+
+CATEGORIES = ("通知", "公告", "政策", "公示")
 
 
-@router.post("", status_code=201)
-def create_announcement(announcement: AnnouncementCreate):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """INSERT INTO announcements (title, content, category, publisher, is_pinned)
-           VALUES (?, ?, ?, ?, ?)""",
-        (announcement.title, announcement.content, announcement.category.value,
-         announcement.publisher, 1 if announcement.is_pinned else 0)
-    )
-    conn.commit()
-    return {"id": cursor.lastrowid, "message": "公告发布成功"}
-
-
-@router.get("")
-def list_announcements(
-    category: Optional[str] = None,
+@public_router.get("")
+def public_list(
+    category: str | None = None,
     page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100)
-):
-    conn = get_connection()
-    conditions = []
-    params = []
-    if category:
-        conditions.append("category = ?")
-        params.append(category)
-
-    where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
-
-    count_sql = f"SELECT COUNT(*) as total FROM announcements{where_clause}"
-    cursor = conn.cursor()
-    cursor.execute(count_sql, params)
-    total = cursor.fetchone()["total"]
-
+    size: int = Query(20, ge=1, le=100),
+) -> dict:
+    if category is not None and category not in CATEGORIES:
+        category = None
     offset = (page - 1) * size
-    query_sql = f"""SELECT * FROM announcements{where_clause}
-                    ORDER BY is_pinned DESC, created_at DESC LIMIT ? OFFSET ?"""
-    cursor.execute(query_sql, params + [size, offset])
-    rows = cursor.fetchall()
-
-    return {
-        "total": total,
-        "page": page,
-        "size": size,
-        "data": [dict(row) for row in rows]
-    }
+    result = AnnouncementService(get_connection()).list_public(
+        category=category, limit=size, offset=offset
+    )
+    result["page"] = page
+    result["size"] = size
+    result.pop("limit", None)
+    result.pop("offset", None)
+    return result
 
 
-@router.get("/{announcement_id}")
-def get_announcement(announcement_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM announcements WHERE id = ?", (announcement_id,))
-    row = cursor.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="公告不存在")
-    return dict(row)
+@public_router.get("/{announcement_id}")
+def public_detail(
+    announcement_id: int,
+    version_no: int | None = Query(default=None, ge=1),
+) -> dict:
+    # 默认返回生效版本；指定 version_no 时返回当时版本，并标明是否存在后续更正
+    return AnnouncementService(get_connection()).public_version(announcement_id, version_no)
 
 
-@router.delete("/{announcement_id}")
-def delete_announcement(announcement_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM announcements WHERE id = ?", (announcement_id,))
-    conn.commit()
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="公告不存在")
-    return {"message": "删除成功"}
+@admin_router.post("", status_code=201)
+def create_draft(data: AnnouncementDraftRequest, principal: Principal = Depends(current_principal)) -> dict:
+    with transaction(immediate=True) as connection:
+        return AnnouncementService(connection).create_draft(principal, data.model_dump())
+
+
+@admin_router.get("")
+def list_internal(
+    status: list[str] | None = Query(default=None),
+    category: str | None = None,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    offset = (page - 1) * size
+    result = AnnouncementService(get_connection()).list_internal(
+        principal, statuses=status, category=category, limit=size, offset=offset
+    )
+    result["page"] = page
+    result["size"] = size
+    result.pop("limit", None)
+    result.pop("offset", None)
+    return result
+
+
+@admin_router.get("/{announcement_id}")
+def internal_detail(announcement_id: int, principal: Principal = Depends(current_principal)) -> dict:
+    return AnnouncementService(get_connection()).detail(principal, announcement_id)
+
+
+@admin_router.put("/{announcement_id}/revise")
+def revise(announcement_id: int, data: AnnouncementReviseRequest,
+           principal: Principal = Depends(current_principal)) -> dict:
+    with transaction(immediate=True) as connection:
+        return AnnouncementService(connection).revise(principal, announcement_id, data.model_dump())
+
+
+@admin_router.post("/{announcement_id}/submit")
+def submit(announcement_id: int, data: AnnouncementSubmitRequest,
+           principal: Principal = Depends(current_principal)) -> dict:
+    with transaction(immediate=True) as connection:
+        return AnnouncementService(connection).submit(principal, announcement_id, data.scheduled_for)
+
+
+@admin_router.post("/{announcement_id}/review")
+def review(announcement_id: int, data: AnnouncementReviewRequest,
+           principal: Principal = Depends(current_principal)) -> dict:
+    with transaction(immediate=True) as connection:
+        return AnnouncementService(connection).review(
+            principal, announcement_id, data.approved, data.opinion
+        )
+
+
+@admin_router.post("/{announcement_id}/correct")
+def correct(announcement_id: int, data: AnnouncementDraftRequest,
+            principal: Principal = Depends(current_principal)) -> dict:
+    with transaction(immediate=True) as connection:
+        return AnnouncementService(connection).correct(principal, announcement_id, data.model_dump())
+
+
+@admin_router.post("/{announcement_id}/withdraw")
+def withdraw(announcement_id: int, data: AnnouncementWithdrawRequest,
+             principal: Principal = Depends(current_principal)) -> dict:
+    with transaction(immediate=True) as connection:
+        return AnnouncementService(connection).withdraw(principal, announcement_id, data.reason)
+
+
+@admin_router.post("/{announcement_id}/archive")
+def archive(announcement_id: int, principal: Principal = Depends(current_principal)) -> dict:
+    with transaction(immediate=True) as connection:
+        return AnnouncementService(connection).archive(principal, announcement_id)
+
+
+@admin_router.get("/{announcement_id}/events")
+def events(announcement_id: int, principal: Principal = Depends(current_principal)) -> dict:
+    return {"data": AnnouncementService(get_connection()).events(principal, announcement_id)}

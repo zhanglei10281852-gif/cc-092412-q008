@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import timedelta
 
-from app.core.clock import Clock, SystemClock, from_storage, to_storage
+from app.core.clock import Clock, SystemClock, to_storage
 from app.core.errors import ConflictError, NotFoundError
 
 
@@ -13,13 +13,24 @@ class JobService:
         self.connection = connection
         self.clock = clock or SystemClock()
 
-    def enqueue(self, job_type: str, deduplication_key: str, payload: dict, *, delay_seconds: int = 0) -> dict:
+    def enqueue(
+        self,
+        job_type: str,
+        deduplication_key: str,
+        payload: dict,
+        *,
+        delay_seconds: int = 0,
+        run_at: datetime | None = None,
+    ) -> dict:
         now = self.clock.now()
+        if run_at is not None and run_at.tzinfo is None:
+            raise ValueError("run_at 必须带时区")
+        available = run_at.astimezone() if run_at is not None else now + timedelta(seconds=delay_seconds)
         try:
             cursor = self.connection.execute(
                 "INSERT INTO background_jobs(job_type,deduplication_key,payload_json,status,available_at,created_at,updated_at) "
                 "VALUES(?,?,?,'pending',?,?,?)",
-                (job_type, deduplication_key, json.dumps(payload, ensure_ascii=False, sort_keys=True), to_storage(now + timedelta(seconds=delay_seconds)), to_storage(now), to_storage(now)),
+                (job_type, deduplication_key, json.dumps(payload, ensure_ascii=False, sort_keys=True), to_storage(available), to_storage(now), to_storage(now)),
             )
         except sqlite3.IntegrityError as exc:
             row = self.connection.execute("SELECT * FROM background_jobs WHERE deduplication_key=?", (deduplication_key,)).fetchone()
@@ -28,7 +39,7 @@ class JobService:
             raise ConflictError("后台任务去重键冲突") from exc
         return dict(self.connection.execute("SELECT * FROM background_jobs WHERE id=?", (cursor.lastrowid,)).fetchone())
 
-    def claim(self, worker: str, *, lease_seconds: int = 60) -> dict | None:
+    def claim(self, worker: str, *, lease_seconds: int = 60, job_types: tuple[str, ...] | None = None) -> dict | None:
         now = self.clock.now()
         stale = to_storage(now - timedelta(seconds=lease_seconds))
         self.connection.execute(
@@ -36,9 +47,15 @@ class JobService:
             "WHERE status='running' AND locked_at<?",
             (to_storage(now), stale),
         )
+        type_filter = ""
+        params: list = [to_storage(now)]
+        if job_types:
+            type_filter = " AND job_type IN ({})".format(",".join("?" for _ in job_types))
+            params.extend(job_types)
         row = self.connection.execute(
-            "SELECT * FROM background_jobs WHERE status='pending' AND available_at<=? "
-            "ORDER BY available_at,id LIMIT 1", (to_storage(now),)
+            "SELECT * FROM background_jobs WHERE status='pending' AND available_at<=?" + type_filter +
+            " ORDER BY available_at,id LIMIT 1",
+            params,
         ).fetchone()
         if row is None:
             return None

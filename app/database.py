@@ -143,13 +143,54 @@ CREATE TABLE IF NOT EXISTS affairs (
 
 CREATE TABLE IF NOT EXISTS announcements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    status TEXT NOT NULL CHECK(status IN ('draft','submitted','rejected','scheduled','published','withdrawn','archived')),
+    current_version_no INTEGER NOT NULL DEFAULT 1,
+    effective_version_no INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS announcement_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+    version_no INTEGER NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
     category TEXT NOT NULL CHECK(category IN ('通知','公告','政策','公示')),
-    publisher TEXT NOT NULL,
     is_pinned INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0,1)),
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    status TEXT NOT NULL CHECK(status IN ('draft','submitted','rejected','scheduled','published','superseded','withdrawn','archived')),
+    author_user_id INTEGER NOT NULL REFERENCES users(id),
+    submitted_at TEXT,
+    reviewer_user_id INTEGER REFERENCES users(id),
+    reviewed_at TEXT,
+    review_opinion TEXT,
+    scheduled_for TEXT,
+    publish_job_id INTEGER REFERENCES background_jobs(id),
+    published_at TEXT,
+    withdrawn_at TEXT,
+    withdrawn_by INTEGER REFERENCES users(id),
+    withdrawn_reason TEXT,
+    archived_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(announcement_id, version_no)
 );
+
+CREATE INDEX IF NOT EXISTS idx_ann_versions_effective
+    ON announcement_versions(announcement_id, version_no, status);
+
+CREATE TABLE IF NOT EXISTS announcement_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+    version_no INTEGER,
+    event TEXT NOT NULL,
+    actor_user_id INTEGER,
+    actor_name TEXT NOT NULL DEFAULT '',
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ann_events ON announcement_events(announcement_id, id);
 
 CREATE TABLE IF NOT EXISTS petitions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -230,7 +271,9 @@ PERMISSIONS = [
     ("affairs.write", "办理事务", "affairs", "write"),
     ("petitions.read", "查看信访", "petitions", "read"),
     ("petitions.write", "办理信访", "petitions", "write"),
-    ("announcements.write", "维护公告", "announcements", "write"),
+    ("announcements.write", "拟写公告", "announcements", "write"),
+    ("announcements.review", "审阅公告", "announcements", "review"),
+    ("announcements.publish", "发布撤回归档公告", "announcements", "publish"),
     ("audit.read", "查看审计", "audit", "read"),
     ("jobs.run", "执行后台任务", "jobs", "run"),
 ]
@@ -302,10 +345,26 @@ def init_db() -> None:
             "INSERT OR IGNORE INTO roles(code,name,description,is_system,created_at,updated_at) VALUES('auditor','审计查看员','只读查看业务与审计记录',1,?,?)",
             (now, now),
         )
+        connection.execute(
+            "INSERT OR IGNORE INTO roles(code,name,description,is_system,created_at,updated_at) VALUES('reviewer','公告审阅员','可审阅、撤回和归档公告，不能拟稿',1,?,?)",
+            (now, now),
+        )
         administrator = connection.execute("SELECT id FROM roles WHERE code='administrator'").fetchone()[0]
         connection.execute(
             "INSERT OR IGNORE INTO role_permissions(role_id,permission_id,granted_at) SELECT ?,id,? FROM permissions",
             (administrator, now),
+        )
+        clerk = connection.execute("SELECT id FROM roles WHERE code='clerk'").fetchone()[0]
+        connection.execute(
+            "INSERT OR IGNORE INTO role_permissions(role_id,permission_id,granted_at) "
+            "SELECT ?,id,? FROM permissions WHERE code IN ('announcements.write')",
+            (clerk, now),
+        )
+        reviewer = connection.execute("SELECT id FROM roles WHERE code='reviewer'").fetchone()[0]
+        connection.execute(
+            "INSERT OR IGNORE INTO role_permissions(role_id,permission_id,granted_at) "
+            "SELECT ?,id,? FROM permissions WHERE code IN ('announcements.review','announcements.publish')",
+            (reviewer, now),
         )
 
 

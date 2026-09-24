@@ -38,6 +38,8 @@ class MaintenanceService:
         "residents",
         "affairs",
         "announcements",
+        "announcement_versions",
+        "announcement_events",
         "petitions",
         "petition_urges",
         "petition_flow_records",

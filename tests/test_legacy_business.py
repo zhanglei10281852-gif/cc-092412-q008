@@ -44,9 +44,21 @@ def test_petition_workflow(client):
     assert [item["action"] for item in detail["flow_records"]][-1] == "审核通过"
 
 
-def test_announcement_sorting(client):
+def test_announcement_sorting(client, admin):
+    # 公告完整流程见 test_announcements.py；此处仅验证公开列表仍按生效版本置顶排序
+    client.post("/api/users", headers=admin["headers"],
+                json={"username": "rev.sort", "password": "Review!23456", "display_name": "审阅员", "role_codes": ["reviewer"]})
+    login = client.post("/api/auth/login", json={"username": "rev.sort", "password": "Review!23456", "client_label": "tests"})
+    reviewer_headers = {"Authorization": f"Bearer {login.json()['token']}"}
     for title, pinned in (("普通通知", False), ("置顶政策", True)):
-        response = client.post("/announcements", json={"title": title, "content": "正文", "category": "通知", "publisher": "办公室", "is_pinned": pinned})
-        assert response.status_code == 201
+        draft = client.post("/api/announcements", headers=admin["headers"],
+                            json={"title": title, "content": "正文", "category": "通知", "is_pinned": pinned})
+        assert draft.status_code == 201, draft.text
+        announcement_id = draft.json()["id"]
+        submitted = client.post(f"/api/announcements/{announcement_id}/submit", headers=admin["headers"], json={})
+        assert submitted.status_code == 200, submitted.text
+        approved = client.post(f"/api/announcements/{announcement_id}/review", headers=reviewer_headers,
+                               json={"approved": True, "opinion": "通过"})
+        assert approved.status_code == 200, approved.text
     rows = client.get("/announcements").json()["data"]
     assert rows[0]["title"] == "置顶政策"
