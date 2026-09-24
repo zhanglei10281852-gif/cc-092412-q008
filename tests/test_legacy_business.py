@@ -44,9 +44,14 @@ def test_petition_workflow(client):
     assert [item["action"] for item in detail["flow_records"]][-1] == "审核通过"
 
 
-def test_announcement_sorting(client):
-    for title, pinned in (("普通通知", False), ("置顶政策", True)):
-        response = client.post("/announcements", json={"title": title, "content": "正文", "category": "通知", "publisher": "办公室", "is_pinned": pinned})
-        assert response.status_code == 201
-    rows = client.get("/announcements").json()["data"]
+def test_announcement_draft_create(client, admin):
+    response = client.post(
+        "/api/announcements",
+        headers=admin["headers"],
+        json={"title": "置顶政策", "content": "正文", "category": "通知", "is_pinned": True},
+    )
+    assert response.status_code == 201, response.text
+    rows = client.get("/api/announcements", headers=admin["headers"]).json()["data"]
     assert rows[0]["title"] == "置顶政策"
+    # 草稿不得出现在公开列表
+    assert client.get("/announcements").json()["data"] == []

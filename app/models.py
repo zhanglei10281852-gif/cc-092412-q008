@@ -64,14 +64,6 @@ class AffairProcess(BaseModel):
     result: Optional[str] = None
 
 
-class AnnouncementCreate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200)
-    content: str
-    category: AnnouncementCategory
-    publisher: str
-    is_pinned: bool = False
-
-
 class PetitionType(str, Enum):
     complaint = "投诉举报"
     suggestion = "意见建议"

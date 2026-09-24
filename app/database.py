@@ -151,6 +151,60 @@ CREATE TABLE IF NOT EXISTS announcements (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS announcement_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+    version_no INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    category TEXT NOT NULL CHECK(category IN ('通知','公告','政策','公示')),
+    is_pinned INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0,1)),
+    author_user_id INTEGER REFERENCES users(id),
+    author_name TEXT NOT NULL,
+    review_status TEXT NOT NULL CHECK(review_status IN ('draft','submitted','approved','rejected')),
+    reviewer_user_id INTEGER REFERENCES users(id),
+    reviewer_name TEXT,
+    review_opinion TEXT,
+    publish_type TEXT NOT NULL DEFAULT 'immediate' CHECK(publish_type IN ('immediate','scheduled')),
+    publish_at TEXT,
+    publish_job_id INTEGER REFERENCES background_jobs(id),
+    submitted_at TEXT,
+    reviewed_at TEXT,
+    published_at TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(announcement_id, version_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_announcement_versions ON announcement_versions(announcement_id, version_no);
+
+CREATE TABLE IF NOT EXISTS announcement_workflow (
+    announcement_id INTEGER PRIMARY KEY REFERENCES announcements(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK(status IN ('draft','pending_review','approved','published','withdrawn','archived')),
+    current_version_no INTEGER NOT NULL,
+    effective_version_no INTEGER,
+    published_at TEXT,
+    withdraw_reason TEXT,
+    withdrawn_at TEXT,
+    withdrawn_by_user_id INTEGER REFERENCES users(id),
+    archived_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_announcement_workflow_status ON announcement_workflow(status);
+
+CREATE TABLE IF NOT EXISTS announcement_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+    version_no INTEGER,
+    event TEXT NOT NULL,
+    actor_user_id INTEGER,
+    actor_name TEXT NOT NULL,
+    detail TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_announcement_events ON announcement_events(announcement_id, id);
+
 CREATE TABLE IF NOT EXISTS petitions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     type TEXT NOT NULL CHECK(type IN ('投诉举报','意见建议','求助咨询','信息公开申请')),
@@ -231,6 +285,8 @@ PERMISSIONS = [
     ("petitions.read", "查看信访", "petitions", "read"),
     ("petitions.write", "办理信访", "petitions", "write"),
     ("announcements.write", "维护公告", "announcements", "write"),
+    ("announcements.review", "审阅公告", "announcements", "review"),
+    ("announcements.audit", "查看公告流转", "announcements", "audit"),
     ("audit.read", "查看审计", "audit", "read"),
     ("jobs.run", "执行后台任务", "jobs", "run"),
 ]

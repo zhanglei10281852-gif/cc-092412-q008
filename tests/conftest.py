@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 @pytest.fixture()
 def client(tmp_path: Path):
     os.environ["TOWNSHIP_DATABASE_PATH"] = str(tmp_path / "test.db")
+    # 测试中由用例显式触发到期发布，避免后台线程造成时序不确定
+    os.environ["TOWNSHIP_SCHEDULER_ENABLED"] = "0"
     from app.database import close_connection
     close_connection()
     from app.main import app

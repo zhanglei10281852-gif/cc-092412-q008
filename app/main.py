@@ -9,14 +9,23 @@ from app.api import audit, auth, departments_admin, maintenance, metrics, roles,
 from app.core.errors import DomainError
 from app.database import close_connection, init_db
 from app.routers import affairs, announcements, departments, petitions, residents
+from app.services.announcement_scheduler import AnnouncementPublishScheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
     init_db()
-    yield
-    close_connection()
+    scheduler = AnnouncementPublishScheduler()
+    if scheduler.enabled:
+        # 先补发进程停机期间到期的任务，再启动周期轮询
+        scheduler.run_once()
+        scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.stop()
+        close_connection()
 
 
 app = FastAPI(title="乡镇政务协同服务", version="2.0.0", lifespan=lifespan)
@@ -43,6 +52,7 @@ app.include_router(maintenance.router)
 app.include_router(residents.router)
 app.include_router(affairs.router)
 app.include_router(announcements.router)
+app.include_router(announcements.management)
 app.include_router(departments.router)
 app.include_router(petitions.router)
 
